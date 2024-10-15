@@ -1,0 +1,297 @@
+with Ada.Text_IO; use Ada.Text_IO;
+with Ada.Integer_Text_IO;
+with Ada.Numerics.Discrete_Random;
+
+procedure main is
+   -- Constants defining the number of parts, products, and consumers
+   Number_of_Parts: constant Integer := 5;
+   Number_of_Products: constant Integer := 3;
+   Number_of_Consumers: constant Integer := 2;
+
+   -- Time ranges for production and consumption
+   subtype Production_Time_Range is Integer range 3 .. 6;
+   subtype Consumption_Time_Range is Integer range 4 .. 8;
+   -- Data types representing parts, products, and consumers
+   subtype Part_Type is Integer range 1 .. Number_of_Parts;
+   subtype Product_Type is Integer range 1 .. Number_of_Products;
+   subtype Consumer_Type is Integer range 1 .. Number_of_Consumers;
+
+   -- Names of the parts
+   Part_Name: constant array (Part_Type) of String(1 .. 6)
+     := ("Piston", "Blocks", "Valves", "Shafts", "Inlets");
+   -- Names of the products
+   Product_Name: constant array (Product_Type) of String(1 .. 8)
+     := ("EngineI4", "EngineI6", "EngineV6");
+   -- Names of the producers
+   Producer_Name: constant array (Part_Type) of String(1 .. 9)
+     := ("PistonPro", "CoolBlock", "ValveMust", "ShaftSeas", "CarbuRobo");
+   -- Names of the consumers
+   Consumer_Name: constant array (Consumer_Type) of String(1 .. 5)
+     := ("Jurek", "Tomek");
+
+   -- Packages for generating random production and consumption times
+   package Random_Consumption is new
+     Ada.Numerics.Discrete_Random(Consumption_Time_Range);
+   package Random_Product is new
+     Ada.Numerics.Discrete_Random(Product_Type);
+   type My_Str is new String(1 .. 256);
+
+   -- Task type for producers producing specific parts
+   task type Producer is
+      -- Entry for starting the producer with part type and production time
+      entry Start(Part: in Part_Type; Production_Time: in Integer);
+   end Producer;
+
+   -- Task type for consumers consuming products from the buffer
+   task type Consumer is
+      -- Entry for starting the consumer with consumer number and consumption time
+      entry Start(Consumer_Number: in Consumer_Type;
+                  Consumption_Time: in Integer);
+   end Consumer;
+
+   -- Task type for the buffer storing parts and issuing products
+   task type Buffer is
+      -- Accept parts into the storage
+      entry Take(Part: in Part_Type; Number: in Integer);
+      -- Issuing finished product from storage
+      entry Give(Product: in Product_Type; Number: out Integer);
+   end Buffer;
+
+   -- Declarations of producer and consumer task arrays and buffer
+   P: array ( 1 .. Number_of_Parts ) of Producer;
+   K: array ( 1 .. Number_of_Consumers ) of Consumer;
+   B: Buffer;
+
+   -- Body of the producer task
+   task body Producer is
+      -- Random production time generator
+      package Random_Production is new
+         Ada.Numerics.Discrete_Random(Production_Time_Range);
+      G: Random_Production.Generator;	-- Random number generator
+      Part_Type_No: Integer;
+      Part_Number: Integer;
+      Production: Integer;
+   begin
+      -- Accept input with part type and production time
+      accept Start(Part: in Part_Type; Production_Time: in Integer) do
+         Random_Production.Reset(G);	-- Initialize random number generator
+         Part_Number := 1; -- Start with the first produced part
+         Part_Type_No := Part;
+         Production := Production_Time;
+      end Start;
+      -- Display a message indicating the producer has started
+      Put_Line("Producer of part " & Part_Name(Part_Type_No) & " started");
+      -- Production loop
+      loop
+         -- Simulate production time by delaying
+         delay Duration(Random_Production.Random(G));
+         -- Display information about the produced part
+         Put_Line("Produced part " & Part_Name(Part_Type_No)
+                   & " number "  & Integer'Image(Part_Number));
+         -- Attempt to place the part in the buffer
+         select
+            B.Take(Part_Type_No, Part_Number);
+         or
+            delay 0.1;  -- Short delay if the buffer is busy
+         end select;
+
+         -- Increase the part number
+         Part_Number := Part_Number + 1;
+      end loop;
+   end Producer;
+
+   -- Body of the consumer task
+   task body Consumer is
+      G: Random_Consumption.Generator;	-- Random consumption time generator
+      G2: Random_Product.Generator;	-- Random product type generator
+      Consumer_no: Consumer_Type;
+      Product_Number: Integer;
+      Consumption: Integer;
+      Product_Kind: Integer;
+   begin
+      -- Accept input with consumer number and consumption time
+      accept Start(Consumer_Number: in Consumer_Type;
+                   Consumption_Time: in Integer) do
+         Random_Consumption.Reset(G);	-- Reset random time generator
+         Random_Product.Reset(G2);	-- Reset random product generator
+         Consumer_no := Consumer_Number;
+         Consumption := Consumption_Time;
+      end Start;
+      -- Display a message indicating the consumer has started
+      Put_Line("Started consumer " & Consumer_Name(Consumer_no));
+      -- Consumption loop
+      loop
+         -- Simulate consumption time by delaying
+         delay Duration(Random_Consumption.Random(G));
+         -- Randomly select a product type to take
+         Product_Kind := Random_Product.Random(G2);
+         -- Attempt to take the product from the buffer
+         select
+         B.Give(Product_Kind, Product_Number);
+         or
+            delay 0.1;  -- Short delay if the buffer is not ready
+         end select;
+
+         -- Display information about the taken product
+         Put_Line(Consumer_Name(Consumer_no) & ": got product " &
+                   Product_Name(Product_Kind) & " number " &
+                   Integer'Image(Product_Number));
+      end loop;
+   end Consumer;
+
+   -- Body of the buffer task
+   task body Buffer is
+      -- Constant defining the warehouse capacity
+      Warehouse_Capacity: constant Integer := 30;
+      -- Type for the warehouse storing part quantities
+      type Warehouse_Type is array (Part_Type) of Integer;
+      -- Number of parts in the warehouse
+      Warehouse: Warehouse_Type
+         := (0, 0, 0, 0, 0); -- Initially no parts in the warehouse
+      -- Array defining the composition of each product (how many parts are needed)
+      Product_Contents: array(Product_Type, Part_Type) of Integer
+         := ((2, 1, 2, 1, 2), -- Product I4 requires certain parts
+             (2, 2, 0, 1, 0), -- Product I6
+             (1, 1, 2, 0, 1)); -- Product V6
+      -- Maximum number of parts needed to assemble any product
+      Max_Product_Contents: array(Part_Type) of Integer;
+      -- Counter for produced products
+      Product_Number: array(Product_Type) of Integer
+         := (1, 1, 1);
+      -- Current number of parts in the warehouse
+      In_Warehouse: Integer := 0;
+
+      -- Procedure to initialize variables
+      procedure Setup_Variables is
+      begin
+         for W in Part_Type loop
+            Max_Product_Contents(W) := 0;
+            for Z in Product_Type loop
+               if Product_Contents(Z, W) > Max_Product_Contents(W) then
+                  Max_Product_Contents(W) := Product_Contents(Z, W);
+               end if;
+            end loop;
+         end loop;
+      end Setup_Variables;
+
+      -- Function to check if a part can be accepted into the warehouse
+      function Can_Take(Part: Part_Type) return Boolean is
+         FreeSpace: Integer; -- Free space in the warehouse
+         Missing: array(Part_Type) of Integer; -- Number of missing parts
+         Number_Missing: Integer;
+         CT: Boolean; -- Flag indicating whether a part can be accepted
+      begin
+         -- If the warehouse is full, return False
+         if In_Warehouse >= Warehouse_Capacity then
+            return False;
+         end if;
+
+         FreeSpace := Warehouse_Capacity - In_Warehouse;
+         CT := True;
+         -- Check if any parts are missing
+         for W in Part_Type loop
+            if Warehouse(W) < Max_Product_Contents(W) then
+               CT := False;
+            end if;
+         end loop;
+         -- If enough parts are available, return True
+         if CT then
+            return True;
+         end if;
+
+         -- Check if the specific part is needed
+         if Integer'Max(0, Max_Product_Contents(Part) - Warehouse(Part)) > 0 then
+            return True;
+         end if;
+
+         Number_Missing := 1;
+         for W in Part_Type loop
+            Missing(W) := Integer'Max(0, Max_Product_Contents(W) - Warehouse(W));
+            Number_Missing := Number_Missing + Missing(W);
+         end loop;
+         if FreeSpace >= Number_Missing then
+            return True; -- There is enough space for missing parts
+         else
+            return False;
+         end if;
+      end Can_Take;
+
+      -- Function to check if a product can be given
+      function Can_Give(Product: Product_Type) return Boolean is
+      begin
+         -- Check if sufficient quantities of all parts are available to assemble the product
+         for W in Part_Type loop
+            if Warehouse(W) < Product_Contents(Product, W) then
+               return False;
+            end if;
+         end loop;
+         return True;
+      end Can_Give;
+
+      -- Procedure to display the warehouse contents
+      procedure Warehouse_Contents is
+      begin
+         for W in Part_Type loop
+            Put_Line("Warehouse contents: " & Integer'Image(Warehouse(W)) & " "
+                      & Part_Name(W));
+         end loop;
+      end Warehouse_Contents;
+
+   begin
+      -- Start the buffer
+      Put_Line("Buffer started");
+      -- Initialize variables
+      Setup_Variables;
+      -- Main loop of the buffer
+      loop
+         -- Handle part acceptance
+         select
+            accept Take(Part: in Part_Type; Number: in Integer) do
+               -- Check if the part can be accepted
+               if Can_Take(Part) then
+                  -- If yes, accept it into the warehouse
+                  Put_Line("Part accepted " & Part_Name(Part) & " number " &
+                           Integer'Image(Number));
+                  Warehouse(Part) := Warehouse(Part) + 1;
+                  In_Warehouse := In_Warehouse + 1;
+               else
+                  -- If not, reject the part
+                  Put_Line("Rejected part " & Part_Name(Part) & " number " &
+                           Integer'Image(Number));
+               end if;
+            end Take;
+         -- Handle product giving
+         or
+            accept Give(Product: in Product_Type; Number: out Integer) do
+               -- Check if the product can be given
+               if Can_Give(Product) then
+                  -- If yes, issue the product
+                  Put_Line("Gave away " & Product_Name(Product) & " number " &
+                            Integer'Image(Product_Number(Product)));
+                  for W in Part_Type loop
+                     Warehouse(W) := Warehouse(W) - Product_Contents(Product, W);
+                     In_Warehouse := In_Warehouse - Product_Contents(Product, W);
+                  end loop;
+                  Number := Product_Number(Product);
+                  Product_Number(Product) := Product_Number(Product) + 1;
+               else
+                  -- If parts are missing, the product cannot be given
+                  Put_Line("Parts missing for product " & Product_Name(Product));
+                  Number := 0;
+               end if;
+            end Give;
+         end select;
+         -- Display the state of the warehouse
+         Warehouse_Contents;
+      end loop;
+   end Buffer;
+
+begin
+   -- Start the producers and consumers
+   for I in 1 .. Number_of_Parts loop
+      P(I).Start(I, 10);
+   end loop;
+   for J in 1 .. Number_of_Consumers loop
+      K(J).Start(J, 12);
+   end loop;
+end main;
